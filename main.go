@@ -1,12 +1,17 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"flag"
+	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/gorilla/handlers"
@@ -53,10 +58,72 @@ func NewSegmentReverseProxy(cdn *url.URL, trackingAPI *url.URL) http.Handler {
 		// See http://blog.semanticart.com/blog/2013/11/11/a-proper-api-proxy-written-in-go/.
 		req.Host = req.URL.Host
 	}
-	return &httputil.ReverseProxy{Director: director}
+
+	proxy := &httputil.ReverseProxy{Director: director}
+	if *customHost != "" {
+		proxy.ModifyResponse = func(resp *http.Response) error {
+			if !strings.HasPrefix(resp.Request.Host, "cdn.segment.com") {
+				return nil
+			}
+			if resp.StatusCode != http.StatusOK {
+				return nil
+			}
+			return rewriteJs(resp)
+		}
+	}
+
+	return proxy
+}
+
+func rewriteJs(resp *http.Response) error {
+	var (
+		responseBytes []byte
+		err           error
+		reader        io.Reader
+	)
+
+	if resp.Uncompressed {
+		reader = resp.Body
+	} else {
+		reader, err = gzip.NewReader(resp.Body)
+		if err != nil {
+			return err
+		}
+	}
+
+	responseBytes, err = ioutil.ReadAll(reader) // Read response
+	if err != nil {
+		return err
+	}
+	err = resp.Body.Close()
+	if err != nil {
+		return err
+	}
+
+	responseBytes = bytes.Replace(responseBytes, []byte("api.segment.io"), []byte(*customHost), -1) // replace html
+
+	if !resp.Uncompressed {
+		buf := bytes.Buffer{}
+		writer := gzip.NewWriter(&buf)
+		_, err := writer.Write(responseBytes)
+		if err != nil {
+			writer.Close()
+			return err
+		}
+		writer.Close()
+		responseBytes = buf.Bytes()
+	}
+
+	body := ioutil.NopCloser(bytes.NewReader(responseBytes))
+	resp.Body = body
+	resp.ContentLength = int64(len(responseBytes))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(responseBytes)))
+
+	return nil
 }
 
 var port = flag.String("port", "8080", "bind address")
+var customHost = flag.String("host", "", "host used for rewriting references to api.segment.io on JS")
 var debug = flag.Bool("debug", false, "debug mode")
 
 func main() {
@@ -69,6 +136,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	if *customHost == "" {
+		log.Print("WARNING: Custom host was not set, if it is not configured on segment your requests won't go to the proxy")
+	}
+
 	proxy := NewSegmentReverseProxy(cdnURL, trackingAPIURL)
 	if *debug {
 		proxy = handlers.LoggingHandler(os.Stdout, proxy)
