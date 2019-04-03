@@ -38,7 +38,7 @@ func NewSegmentReverseProxy(cdn *url.URL, trackingAPI *url.URL) http.Handler {
 	director := func(req *http.Request) {
 		// Figure out which server to redirect to based on the incoming request.
 		var target *url.URL
-		if strings.HasPrefix(req.URL.String(), "/v1/projects") || strings.HasPrefix(req.URL.String(), "/analytics.js/v1") {
+		if strings.HasPrefix(req.URL.String(), "/v1/projects") || strings.HasPrefix(req.URL.String(), "/a.js/v1") || strings.HasPrefix(req.URL.String(), "/analytics.js/v1") {
 			target = cdn
 		} else {
 			target = trackingAPI
@@ -48,6 +48,14 @@ func NewSegmentReverseProxy(cdn *url.URL, trackingAPI *url.URL) http.Handler {
 		req.URL.Scheme = target.Scheme
 		req.URL.Host = target.Host
 		req.URL.Path = singleJoiningSlash(target.Path, req.URL.Path)
+
+		if strings.HasPrefix(req.URL.Path, "/a.js/v1") {
+			req.URL.Path = strings.Replace(req.URL.Path, "/a.js/v1", "/analytics.js/v1", 1)
+		}
+		if strings.HasSuffix(req.URL.Path, "a.min.js") {
+			req.URL.Path = strings.Replace(req.URL.Path, "a.min.js", "analytics.min.js", 1)
+		}
+
 		if targetQuery == "" || req.URL.RawQuery == "" {
 			req.URL.RawQuery = targetQuery + req.URL.RawQuery
 		} else {
